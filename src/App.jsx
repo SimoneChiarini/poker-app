@@ -11,25 +11,62 @@ function phaseColor(phase) {
   return { preflop: '#6366f1', flop: '#0ea5e9', turn: '#f59e0b', river: '#ef4444', showdown: '#10b981' }[phase] || '#6b7280'
 }
 
+const LS_KEY = 'poker_session'
+
+function saveSession(data) {
+  localStorage.setItem(LS_KEY, JSON.stringify(data))
+}
+
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) } catch { return null }
+}
+
+function clearSession() {
+  localStorage.removeItem(LS_KEY)
+}
+
+// ─── PIN modal ──────────────────────────────────────────────────────────────
+
+function PinModal({ pin, roomId, onClose }) {
+  return (
+    <div className="modal-overlay">
+      <div className="modal">
+        <div className="modal-title">Il tuo PIN di accesso</div>
+        <p className="modal-hint">Annotalo: ti serve per rientrare se aggiorni la pagina</p>
+        <div className="pin-display">{pin}</div>
+        <p className="modal-hint">Stanza: <strong>{roomId}</strong></p>
+        <button className="btn-primary" onClick={onClose}>Ho salvato il PIN</button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Home screen ────────────────────────────────────────────────────────────
 
-function Home({ onCreated, onJoined, error }) {
+function Home({ error, onAction }) {
   const [name, setName] = useState('')
   const [code, setCode] = useState('')
+  const [pin, setPin] = useState('')
   const [tab, setTab] = useState('create')
 
   function handleCreate(e) {
     e.preventDefault()
     if (!name.trim()) return
     socket.emit('create_room', { name: name.trim() })
-    onCreated(name.trim())
   }
 
   function handleJoin(e) {
     e.preventDefault()
-    if (!name.trim() || !code.trim()) return
+    if (!name.trim() || code.length < 4) return
     socket.emit('join_room', { roomId: code.trim().toUpperCase(), name: name.trim() })
-    onJoined(name.trim())
+  }
+
+  function handleRejoin(e) {
+    e.preventDefault()
+    const saved = loadSession()
+    const roomIdToUse = saved?.roomId || code.trim().toUpperCase()
+    if (!roomIdToUse || !pin.trim()) return
+    socket.emit('rejoin_room', { roomId: roomIdToUse, playerId: saved?.playerId, pin: pin.trim() })
   }
 
   return (
@@ -37,29 +74,48 @@ function Home({ onCreated, onJoined, error }) {
       <div className="logo">🃏 Poker Night</div>
 
       <div className="tab-bar">
-        <button className={tab === 'create' ? 'tab active' : 'tab'} onClick={() => setTab('create')}>Crea partita</button>
+        <button className={tab === 'create' ? 'tab active' : 'tab'} onClick={() => setTab('create')}>Crea</button>
         <button className={tab === 'join' ? 'tab active' : 'tab'} onClick={() => setTab('join')}>Entra</button>
+        <button className={tab === 'rejoin' ? 'tab active' : 'tab'} onClick={() => setTab('rejoin')}>Rientra</button>
       </div>
 
-      {tab === 'create' ? (
+      {tab === 'create' && (
         <form className="card" onSubmit={handleCreate}>
           <label>Il tuo nome</label>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="Es. Mario" maxLength={16} autoFocus />
           <button type="submit" className="btn-primary" disabled={!name.trim()}>Crea stanza</button>
         </form>
-      ) : (
+      )}
+
+      {tab === 'join' && (
         <form className="card" onSubmit={handleJoin}>
           <label>Il tuo nome</label>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="Es. Luigi" maxLength={16} autoFocus />
           <label>Codice stanza</label>
           <input
-            value={code}
-            onChange={e => setCode(e.target.value.toUpperCase())}
-            placeholder="Es. A3F2"
-            maxLength={4}
-            style={{ letterSpacing: '0.2em', textTransform: 'uppercase', fontSize: '1.4rem', textAlign: 'center' }}
+            value={code} onChange={e => setCode(e.target.value.toUpperCase())}
+            placeholder="Es. A3F2" maxLength={4}
+            style={{ letterSpacing: '0.2em', fontSize: '1.4rem', textAlign: 'center' }}
           />
           <button type="submit" className="btn-primary" disabled={!name.trim() || code.length < 4}>Entra</button>
+        </form>
+      )}
+
+      {tab === 'rejoin' && (
+        <form className="card" onSubmit={handleRejoin}>
+          <label>Codice stanza</label>
+          <input
+            value={code} onChange={e => setCode(e.target.value.toUpperCase())}
+            placeholder="Es. A3F2" maxLength={4}
+            style={{ letterSpacing: '0.2em', fontSize: '1.4rem', textAlign: 'center' }}
+          />
+          <label>Il tuo PIN (4 cifre)</label>
+          <input
+            value={pin} onChange={e => setPin(e.target.value)}
+            placeholder="Es. 4821" maxLength={4} type="tel"
+            style={{ letterSpacing: '0.3em', fontSize: '1.6rem', textAlign: 'center' }}
+          />
+          <button type="submit" className="btn-primary" disabled={code.length < 4 || pin.length < 4}>Rientra</button>
         </form>
       )}
 
@@ -70,8 +126,8 @@ function Home({ onCreated, onJoined, error }) {
 
 // ─── Lobby screen ───────────────────────────────────────────────────────────
 
-function Lobby({ state, myId, error }) {
-  const isAdmin = state.adminId === myId
+function Lobby({ state, myPlayerId, error }) {
+  const isAdmin = state.players.find(p => p.playerId === myPlayerId)?.isAdmin
   const [stack, setStack] = useState('1000')
   const [sb, setSb] = useState('10')
   const [bb, setBb] = useState('20')
@@ -83,6 +139,12 @@ function Lobby({ state, myId, error }) {
       smallBlind: Number(sb),
       bigBlind: Number(bb)
     })
+  }
+
+  function move(fromIndex, dir) {
+    const toIndex = fromIndex + dir
+    if (toIndex < 0 || toIndex >= state.players.length) return
+    socket.emit('reorder_seats', { roomId: state.roomId, fromIndex, toIndex })
   }
 
   function kick(playerId) {
@@ -101,39 +163,38 @@ function Lobby({ state, myId, error }) {
       </div>
 
       <div className="card">
-        <h3>Giocatori ({state.players.length})</h3>
-        {state.players.map(p => (
-          <div key={p.id} className="player-row">
-            <span>{p.name} {p.isAdmin ? '👑' : ''} {p.id === myId ? '(tu)' : ''}</span>
-            {isAdmin && p.id !== myId && (
-              <button className="btn-small btn-danger" onClick={() => kick(p.id)}>Rimuovi</button>
+        <h3>Sedute ({state.players.length}) {isAdmin && <span className="hint-inline">— trascina per riordinare</span>}</h3>
+        {state.players.map((p, i) => (
+          <div key={p.playerId} className="player-row">
+            <span className="seat-num">{i + 1}</span>
+            <span className="seat-name">
+              {p.name}
+              {p.isAdmin ? ' 👑' : ''}
+              {p.playerId === myPlayerId ? ' (tu)' : ''}
+            </span>
+            {isAdmin && (
+              <div className="seat-controls">
+                <button className="btn-arrow" onClick={() => move(i, -1)} disabled={i === 0}>↑</button>
+                <button className="btn-arrow" onClick={() => move(i, 1)} disabled={i === state.players.length - 1}>↓</button>
+                {p.playerId !== myPlayerId && (
+                  <button className="btn-small btn-danger" onClick={() => kick(p.playerId)}>✕</button>
+                )}
+              </div>
             )}
           </div>
         ))}
+        <p className="hint">L'ordine qui definisce la rotazione dealer/bui</p>
       </div>
 
       {isAdmin && (
         <div className="card">
           <h3>Impostazioni</h3>
           <div className="settings-grid">
-            <div>
-              <label>Fiches iniziali</label>
-              <input type="number" value={stack} onChange={e => setStack(e.target.value)} min="10" />
-            </div>
-            <div>
-              <label>Small Blind</label>
-              <input type="number" value={sb} onChange={e => setSb(e.target.value)} min="1" />
-            </div>
-            <div>
-              <label>Big Blind</label>
-              <input type="number" value={bb} onChange={e => setBb(e.target.value)} min="2" />
-            </div>
+            <div><label>Fiches</label><input type="number" value={stack} onChange={e => setStack(e.target.value)} min="10" /></div>
+            <div><label>Small Blind</label><input type="number" value={sb} onChange={e => setSb(e.target.value)} min="1" /></div>
+            <div><label>Big Blind</label><input type="number" value={bb} onChange={e => setBb(e.target.value)} min="2" /></div>
           </div>
-          <button
-            className="btn-primary"
-            onClick={start}
-            disabled={state.players.length < 2}
-          >
+          <button className="btn-primary" onClick={start} disabled={state.players.length < 2}>
             Inizia partita
           </button>
           {state.players.length < 2 && <p className="hint">Servono almeno 2 giocatori</p>}
@@ -151,17 +212,40 @@ function Lobby({ state, myId, error }) {
   )
 }
 
+// ─── Eliminated screen ───────────────────────────────────────────────────────
+
+function EliminatedScreen({ state, myPlayerId }) {
+  const me = state.players.find(p => p.playerId === myPlayerId)
+  return (
+    <div className="screen-center">
+      <div style={{ fontSize: '4rem' }}>💀</div>
+      <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>Eliminato</div>
+      <p className="hint">{me?.name}, hai finito le fiches.</p>
+      <p className="hint">Aspetta che l'admin ti riammetta, poi aggiorna la pagina.</p>
+
+      <div className="card" style={{ width: '100%' }}>
+        <h3>Giocatori attivi</h3>
+        {state.players.filter(p => !p.eliminated).map(p => (
+          <div key={p.playerId} className="player-row">
+            <span>{p.name}</span>
+            <span style={{ color: '#f59e0b' }}>{p.stack}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ─── Game screen ────────────────────────────────────────────────────────────
 
-function Game({ state, myId, error }) {
-  const isAdmin = state.adminId === myId
-  const me = state.players.find(p => p.id === myId)
+function Game({ state, myPlayerId, error }) {
+  const me = state.players.find(p => p.playerId === myPlayerId)
+  const isAdmin = me?.isAdmin
   const currentPlayer = state.currentPlayerIndex >= 0 ? state.players[state.currentPlayerIndex] : null
-  const isMyTurn = currentPlayer?.id === myId
-  const logRef = useRef(null)
-
+  const isMyTurn = currentPlayer?.playerId === myPlayerId
   const callAmount = me ? Math.min(state.currentBet - me.bet, me.stack) : 0
   const canCheck = me ? me.bet >= state.currentBet : false
+  const logRef = useRef(null)
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -185,68 +269,27 @@ function Game({ state, myId, error }) {
         </div>
       </div>
 
-      {/* Players */}
-      <div className="players-grid">
-        {state.players.map((p, i) => {
-          const isDealer = i === state.dealerIndex
-          const isSB = i === (state.dealerIndex + 1) % state.players.length
-          const isBB = i === (state.dealerIndex + 2) % state.players.length
-          const isCurrent = i === state.currentPlayerIndex
-          const isMe = p.id === myId
-          return (
-            <div
-              key={p.id}
-              className={[
-                'player-card',
-                p.folded ? 'folded' : '',
-                isCurrent ? 'current' : '',
-                isMe ? 'me' : '',
-                p.allIn ? 'all-in' : '',
-                p.disconnected ? 'disconnected' : ''
-              ].filter(Boolean).join(' ')}
-            >
-              <div className="player-name">
-                {p.name}
-                {isDealer && <span className="badge dealer">D</span>}
-                {isSB && !isDealer && <span className="badge sb">SB</span>}
-                {isBB && <span className="badge bb">BB</span>}
-                {isMe && <span className="badge me">tu</span>}
-              </div>
-              <div className="player-stack">{p.folded ? 'Passato' : p.allIn ? `All-in` : `${p.stack}`}</div>
-              {p.bet > 0 && !p.folded && <div className="player-bet">punta: {p.bet}</div>}
-              {p.disconnected && <div className="dc-label">disconnesso</div>}
-            </div>
-          )
-        })}
-      </div>
+      {/* Table view */}
+      <TableView state={state} myPlayerId={myPlayerId} />
 
-      {/* My info + actions */}
-      {me && !me.folded && state.phase !== 'waiting' && state.phase !== 'showdown' && (
+      {/* My actions */}
+      {me && !me.folded && !me.eliminated && state.phase !== 'waiting' && state.phase !== 'showdown' && (
         <div className="card action-area">
           <div className="my-stack-row">
             <span>Le tue fiches: <strong>{me.stack}</strong></span>
             {me.bet > 0 && <span>Hai puntato: <strong>{me.bet}</strong></span>}
           </div>
-
           {isMyTurn ? (
-            <ActionButtons
-              me={me}
-              state={state}
-              canCheck={canCheck}
-              callAmount={callAmount}
-              onAction={action}
-            />
+            <ActionButtons me={me} state={state} canCheck={canCheck} callAmount={callAmount} onAction={action} />
           ) : (
             <div className="waiting-msg">
-              {currentPlayer
-                ? `Turno di ${currentPlayer.name}...`
-                : 'In attesa della prossima azione...'}
+              {currentPlayer ? `Turno di ${currentPlayer.name}...` : 'In attesa...'}
             </div>
           )}
         </div>
       )}
 
-      {me?.folded && state.phase !== 'showdown' && (
+      {me?.folded && !me.eliminated && state.phase !== 'showdown' && (
         <div className="card center">
           <p className="hint">Hai passato questa mano</p>
           {currentPlayer && <p className="hint">Turno di {currentPlayer.name}</p>}
@@ -254,9 +297,7 @@ function Game({ state, myId, error }) {
       )}
 
       {/* Admin panel */}
-      {isAdmin && (
-        <AdminPanel state={state} myId={myId} />
-      )}
+      {isAdmin && <AdminPanel state={state} myPlayerId={myPlayerId} />}
 
       {/* Log */}
       <div className="card">
@@ -273,7 +314,68 @@ function Game({ state, myId, error }) {
   )
 }
 
-// ─── Action buttons ─────────────────────────────────────────────────────────
+// ─── Table view (oval) ───────────────────────────────────────────────────────
+
+function TableView({ state, myPlayerId }) {
+  const players = state.players
+  const n = players.length
+
+  return (
+    <div className="table-container">
+      <div className="table-felt">
+        <div className="table-center">
+          {state.pot > 0 && <div className="table-pot">🪙 {state.pot}</div>}
+          <div className="table-phase" style={{ color: phaseColor(state.phase) }}>
+            {phaseLabel(state.phase)}
+          </div>
+        </div>
+
+        {players.map((p, i) => {
+          const angle = (2 * Math.PI * i) / n - Math.PI / 2
+          const rx = 42, ry = 34
+          const cx = 50 + rx * Math.cos(angle)
+          const cy = 50 + ry * Math.sin(angle)
+          const isDealer = i === state.dealerIndex
+          const isSB = i === (state.dealerIndex + 1) % n
+          const isBB = i === (state.dealerIndex + 2) % n
+          const isCurrent = i === state.currentPlayerIndex
+          const isMe = p.playerId === myPlayerId
+
+          return (
+            <div
+              key={p.playerId}
+              className={[
+                'table-seat',
+                p.folded || p.eliminated ? 'folded' : '',
+                isCurrent ? 'current' : '',
+                isMe ? 'me' : '',
+                p.allIn ? 'all-in' : '',
+                p.disconnected ? 'disconnected' : '',
+                p.eliminated ? 'eliminated' : ''
+              ].filter(Boolean).join(' ')}
+              style={{ left: `${cx}%`, top: `${cy}%` }}
+            >
+              <div className="seat-badges">
+                {isDealer && <span className="badge dealer">D</span>}
+                {isSB && !isDealer && <span className="badge sb">SB</span>}
+                {isBB && <span className="badge bb">BB</span>}
+              </div>
+              <div className="seat-name">{p.name}{isMe ? ' ★' : ''}</div>
+              <div className="seat-stack">
+                {p.eliminated ? '💀' : p.folded ? '—' : p.allIn ? `AI ${p.stack}` : p.stack}
+              </div>
+              {p.bet > 0 && !p.folded && !p.eliminated && (
+                <div className="seat-bet">+{p.bet}</div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ─── Action buttons ──────────────────────────────────────────────────────────
 
 function ActionButtons({ me, state, canCheck, callAmount, onAction }) {
   const [raiseAmount, setRaiseAmount] = useState('')
@@ -290,55 +392,38 @@ function ActionButtons({ me, state, canCheck, callAmount, onAction }) {
     setRaiseAmount('')
   }
 
-  function handleAllIn() {
-    onAction('all_in')
-  }
-
   return (
     <div className="action-buttons">
       <button className="btn-action btn-fold" onClick={() => onAction('fold')}>Passa</button>
 
-      {canCheck ? (
-        <button className="btn-action btn-check" onClick={() => onAction('check')}>Check</button>
-      ) : (
-        <button className="btn-action btn-call" onClick={() => onAction('call')} disabled={callAmount === 0}>
-          Chiama {callAmount}
-        </button>
-      )}
+      {canCheck
+        ? <button className="btn-action btn-check" onClick={() => onAction('check')}>Check</button>
+        : <button className="btn-action btn-call" onClick={() => onAction('call')} disabled={callAmount === 0}>Chiama {callAmount}</button>
+      }
 
       <button className="btn-action btn-raise" onClick={() => setShowRaise(!showRaise)}>
         {canCheck ? 'Punta' : 'Rilancia'}
       </button>
 
-      <button className="btn-action btn-allin" onClick={handleAllIn}>
+      <button className="btn-action btn-allin" onClick={() => onAction('all_in')}>
         All-in ({me.stack})
       </button>
 
       {showRaise && (
         <div className="raise-panel">
-          <div className="raise-hint">
-            Min: {Math.min(minRaise, maxRaise)} — Max: {maxRaise}
-          </div>
-          <div className="raise-current">
-            Puntata attuale: {state.currentBet}
-          </div>
+          <div className="raise-hint">Min: {Math.min(minRaise, maxRaise)} — Max: {maxRaise} | Attuale: {state.currentBet}</div>
           <div className="raise-input-row">
             <input
-              type="number"
-              value={raiseAmount}
+              type="number" value={raiseAmount}
               onChange={e => setRaiseAmount(e.target.value)}
-              min={Math.min(minRaise, maxRaise)}
-              max={maxRaise}
-              placeholder={`Min ${Math.min(minRaise, maxRaise)}`}
-              autoFocus
+              min={Math.min(minRaise, maxRaise)} max={maxRaise}
+              placeholder={`Min ${Math.min(minRaise, maxRaise)}`} autoFocus
             />
-            <button className="btn-primary" onClick={handleRaise}>Conferma</button>
+            <button className="btn-primary" onClick={handleRaise}>OK</button>
           </div>
           <input
             type="range"
-            min={Math.min(minRaise, maxRaise)}
-            max={maxRaise}
-            step={state.bigBlind}
+            min={Math.min(minRaise, maxRaise)} max={maxRaise} step={state.bigBlind}
             value={raiseAmount || Math.min(minRaise, maxRaise)}
             onChange={e => setRaiseAmount(e.target.value)}
           />
@@ -350,114 +435,126 @@ function ActionButtons({ me, state, canCheck, callAmount, onAction }) {
 
 // ─── Admin panel ─────────────────────────────────────────────────────────────
 
-function AdminPanel({ state, myId }) {
+function AdminPanel({ state, myPlayerId }) {
   const [selectedWinners, setSelectedWinners] = useState([])
+  const [showRebuy, setShowRebuy] = useState(false)
+  const [showReadmit, setShowReadmit] = useState(false)
   const [rebuyPlayerId, setRebuyPlayerId] = useState('')
   const [rebuyAmount, setRebuyAmount] = useState('1000')
-  const [showRebuy, setShowRebuy] = useState(false)
+  const [readmitPlayerId, setReadmitPlayerId] = useState('')
+  const [readmitStack, setReadmitStack] = useState('1000')
 
   const roundOver = state.currentPlayerIndex === -1
   const canAdvance = roundOver && state.phase !== 'showdown' && state.phase !== 'waiting'
   const isShowdown = state.phase === 'showdown'
-  const activePlayers = state.players.filter(p => !p.folded)
+  const alivePlayers = state.players.filter(p => !p.folded && !p.eliminated)
+  const eliminatedPlayers = state.players.filter(p => p.eliminated)
 
-  function toggleWinner(id) {
-    setSelectedWinners(prev =>
-      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
-    )
+  function toggleWinner(playerId) {
+    setSelectedWinners(prev => prev.includes(playerId) ? prev.filter(x => x !== playerId) : [...prev, playerId])
   }
 
   function declareWinner() {
-    if (selectedWinners.length === 0) return
+    if (!selectedWinners.length) return
     socket.emit('declare_winner', { roomId: state.roomId, winnerIds: selectedWinners })
     setSelectedWinners([])
   }
 
-  function nextHand() {
-    socket.emit('next_hand', { roomId: state.roomId })
-    setSelectedWinners([])
-  }
-
   function doRebuy() {
-    if (!rebuyPlayerId || !rebuyAmount) return
+    if (!rebuyPlayerId) return
     socket.emit('add_chips', { roomId: state.roomId, playerId: rebuyPlayerId, amount: Number(rebuyAmount) })
     setShowRebuy(false)
+  }
+
+  function doReadmit() {
+    if (!readmitPlayerId) return
+    socket.emit('readmit_player', { roomId: state.roomId, playerId: readmitPlayerId, stack: Number(readmitStack) })
+    setShowReadmit(false)
   }
 
   return (
     <div className="card admin-panel">
       <div className="admin-title">Pannello Admin 👑</div>
 
-      {/* Street control */}
       {canAdvance && (
-        <button
-          className="btn-primary"
-          onClick={() => socket.emit('next_street', { roomId: state.roomId })}
-        >
-          Avanza →{' '}
-          {state.phase === 'preflop' ? 'Flop'
-            : state.phase === 'flop' ? 'Turn'
-            : state.phase === 'turn' ? 'River'
-            : 'Showdown'}
+        <button className="btn-primary" onClick={() => socket.emit('next_street', { roomId: state.roomId })}>
+          Avanza → {state.phase === 'preflop' ? 'Flop' : state.phase === 'flop' ? 'Turn' : state.phase === 'turn' ? 'River' : 'Showdown'}
         </button>
       )}
 
       {!roundOver && state.phase !== 'showdown' && state.phase !== 'waiting' && (
-        <div className="hint">Aspetta che tutti i giocatori agiscano</div>
+        <div className="hint">Aspetta che tutti agiscano</div>
       )}
 
-      {/* Winner selection */}
       {isShowdown && state.pot > 0 && (
         <div className="winner-section">
           <div className="winner-title">Chi vince il piatto di {state.pot}?</div>
-          <div className="winner-hint">(Seleziona più giocatori per split pot)</div>
+          <div className="winner-hint">Seleziona più giocatori per split pot</div>
           <div className="winner-list">
-            {activePlayers.map(p => (
+            {alivePlayers.map(p => (
               <button
-                key={p.id}
-                className={`winner-btn ${selectedWinners.includes(p.id) ? 'selected' : ''}`}
-                onClick={() => toggleWinner(p.id)}
+                key={p.playerId}
+                className={`winner-btn ${selectedWinners.includes(p.playerId) ? 'selected' : ''}`}
+                onClick={() => toggleWinner(p.playerId)}
               >
                 {p.name} ({p.stack})
               </button>
             ))}
           </div>
-          <button
-            className="btn-primary"
-            onClick={declareWinner}
-            disabled={selectedWinners.length === 0}
-          >
+          <button className="btn-primary" onClick={declareWinner} disabled={!selectedWinners.length}>
             Assegna piatto
           </button>
         </div>
       )}
 
-      {/* Next hand */}
       {isShowdown && state.pot === 0 && (
-        <button className="btn-primary" onClick={nextHand}>
+        <button className="btn-primary" onClick={() => socket.emit('next_hand', { roomId: state.roomId })}>
           Mano successiva ▶
         </button>
       )}
 
+      {/* Eliminated players */}
+      {eliminatedPlayers.length > 0 && (
+        <div className="eliminated-section">
+          <div className="eliminated-title">Eliminati 💀</div>
+          {eliminatedPlayers.map(p => (
+            <div key={p.playerId} className="player-row">
+              <span>{p.name}</span>
+              <button className="btn-small btn-success" onClick={() => {
+                setReadmitPlayerId(p.playerId)
+                setShowReadmit(true)
+              }}>Riammetti</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showReadmit && (
+        <div className="rebuy-panel">
+          <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            Stack per {state.players.find(p => p.playerId === readmitPlayerId)?.name}:
+          </div>
+          <input type="number" value={readmitStack} onChange={e => setReadmitStack(e.target.value)} min="1" />
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn-primary" onClick={doReadmit}>Riammetti</button>
+            <button className="btn-secondary" onClick={() => setShowReadmit(false)}>Annulla</button>
+          </div>
+        </div>
+      )}
+
       {/* Rebuy */}
       <button className="btn-secondary" onClick={() => setShowRebuy(!showRebuy)}>
-        Rebuy / Aggiungi fiches
+        Aggiungi fiches (rebuy)
       </button>
       {showRebuy && (
         <div className="rebuy-panel">
           <select value={rebuyPlayerId} onChange={e => setRebuyPlayerId(e.target.value)}>
             <option value="">Seleziona giocatore</option>
-            {state.players.map(p => (
-              <option key={p.id} value={p.id}>{p.name} ({p.stack})</option>
+            {state.players.filter(p => !p.eliminated).map(p => (
+              <option key={p.playerId} value={p.playerId}>{p.name} ({p.stack})</option>
             ))}
           </select>
-          <input
-            type="number"
-            value={rebuyAmount}
-            onChange={e => setRebuyAmount(e.target.value)}
-            min="1"
-            placeholder="Importo"
-          />
+          <input type="number" value={rebuyAmount} onChange={e => setRebuyAmount(e.target.value)} min="1" placeholder="Importo" />
           <button className="btn-primary" onClick={doRebuy} disabled={!rebuyPlayerId}>Aggiungi</button>
         </div>
       )}
@@ -469,9 +566,9 @@ function AdminPanel({ state, myId }) {
 
 export default function App() {
   const [screen, setScreen] = useState('home')
-  const [myName, setMyName] = useState('')
   const [gameState, setGameState] = useState(null)
-  const [myId, setMyId] = useState('')
+  const [myPlayerId, setMyPlayerId] = useState(() => loadSession()?.playerId || '')
+  const [pendingPin, setPendingPin] = useState(null)
   const [error, setError] = useState('')
 
   function showError(msg) {
@@ -479,16 +576,47 @@ export default function App() {
     setTimeout(() => setError(''), 4000)
   }
 
+  // Auto-reconnect on load
   useEffect(() => {
-    socket.on('connect', () => setMyId(socket.id))
+    const saved = loadSession()
+    if (saved?.playerId && saved?.pin && saved?.roomId) {
+      socket.emit('rejoin_room', { roomId: saved.roomId, playerId: saved.playerId, pin: saved.pin })
+    }
+  }, [])
 
-    socket.on('room_created', () => setScreen('lobby'))
-    socket.on('room_joined', () => setScreen('lobby'))
+  useEffect(() => {
+    socket.on('connect', () => {})
+
+    socket.on('room_created', ({ roomId, playerId, pin }) => {
+      setMyPlayerId(playerId)
+      saveSession({ roomId, playerId, pin })
+      setPendingPin({ pin, roomId })
+      setScreen('lobby')
+    })
+
+    socket.on('room_joined', ({ roomId, playerId, pin }) => {
+      setMyPlayerId(playerId)
+      saveSession({ roomId, playerId, pin })
+      setPendingPin({ pin, roomId })
+      setScreen('lobby')
+    })
+
+    socket.on('rejoin_success', ({ roomId, playerId }) => {
+      setMyPlayerId(playerId)
+      // game_state will follow and set the screen
+    })
+
+    socket.on('rejoin_failed', (reason) => {
+      clearSession()
+      showError(reason || 'Impossibile rientrare')
+      setScreen('home')
+    })
 
     socket.on('game_state', (state) => {
-      setMyId(state.myId)
+      setMyPlayerId(prev => prev || state.myPlayerId)
       setGameState(state)
-      if (state.phase !== 'waiting' && screen !== 'game') setScreen('game')
+      if (state.phase !== 'waiting') setScreen('game')
+      else setScreen('lobby')
     })
 
     socket.on('error_msg', showError)
@@ -497,26 +625,43 @@ export default function App() {
       socket.off('connect')
       socket.off('room_created')
       socket.off('room_joined')
+      socket.off('rejoin_success')
+      socket.off('rejoin_failed')
       socket.off('game_state')
       socket.off('error_msg')
     }
-  }, [screen])
+  }, [])
 
   if (screen === 'home') {
+    return <Home error={error} onAction={() => {}} />
+  }
+
+  if (!gameState) {
     return (
-      <Home
-        error={error}
-        onCreated={name => setMyName(name)}
-        onJoined={name => setMyName(name)}
-      />
+      <div className="screen-center">
+        <div className="hint">Connessione in corso...</div>
+      </div>
     )
   }
 
-  if (!gameState) return <div className="screen-center"><p>Connessione...</p></div>
-
-  if (screen === 'lobby' || gameState.phase === 'waiting') {
-    return <Lobby state={gameState} myId={myId} error={error} />
+  // Check if current player is eliminated
+  const me = gameState.players.find(p => p.playerId === myPlayerId)
+  if (me?.eliminated && screen === 'game') {
+    return (
+      <>
+        {pendingPin && <PinModal pin={pendingPin.pin} roomId={pendingPin.roomId} onClose={() => setPendingPin(null)} />}
+        <EliminatedScreen state={gameState} myPlayerId={myPlayerId} />
+      </>
+    )
   }
 
-  return <Game state={gameState} myId={myId} error={error} />
+  return (
+    <>
+      {pendingPin && <PinModal pin={pendingPin.pin} roomId={pendingPin.roomId} onClose={() => setPendingPin(null)} />}
+      {screen === 'lobby' || gameState.phase === 'waiting'
+        ? <Lobby state={gameState} myPlayerId={myPlayerId} error={error} />
+        : <Game state={gameState} myPlayerId={myPlayerId} error={error} />
+      }
+    </>
+  )
 }
