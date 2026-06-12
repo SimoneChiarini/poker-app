@@ -437,17 +437,20 @@ function ActionButtons({ me, state, canCheck, callAmount, onAction }) {
 
 function AdminPanel({ state, myPlayerId }) {
   const [selectedWinners, setSelectedWinners] = useState([])
-  const [showRebuy, setShowRebuy] = useState(false)
+  const [showChips, setShowChips] = useState(false)
+  const [chipsMode, setChipsMode] = useState('add')
+  const [chipsPlayerId, setChipsPlayerId] = useState('')
+  const [chipsAmount, setChipsAmount] = useState('1000')
   const [showReadmit, setShowReadmit] = useState(false)
-  const [rebuyPlayerId, setRebuyPlayerId] = useState('')
-  const [rebuyAmount, setRebuyAmount] = useState('1000')
   const [readmitPlayerId, setReadmitPlayerId] = useState('')
   const [readmitStack, setReadmitStack] = useState('1000')
 
   const roundOver = state.currentPlayerIndex === -1
   const canAdvance = roundOver && state.phase !== 'showdown' && state.phase !== 'waiting'
   const isShowdown = state.phase === 'showdown'
+  const isActive = state.phase !== 'waiting' && state.phase !== 'showdown'
   const alivePlayers = state.players.filter(p => !p.folded && !p.eliminated)
+  const foldedPlayers = state.players.filter(p => p.folded && !p.eliminated)
   const eliminatedPlayers = state.players.filter(p => p.eliminated)
 
   function toggleWinner(playerId) {
@@ -460,10 +463,13 @@ function AdminPanel({ state, myPlayerId }) {
     setSelectedWinners([])
   }
 
-  function doRebuy() {
-    if (!rebuyPlayerId) return
-    socket.emit('add_chips', { roomId: state.roomId, playerId: rebuyPlayerId, amount: Number(rebuyAmount) })
-    setShowRebuy(false)
+  function doChips() {
+    if (!chipsPlayerId) return
+    socket.emit(chipsMode === 'add' ? 'add_chips' : 'set_chips', {
+      roomId: state.roomId, playerId: chipsPlayerId, amount: Number(chipsAmount)
+    })
+    setShowChips(false)
+    setChipsPlayerId('')
   }
 
   function doReadmit() {
@@ -513,6 +519,21 @@ function AdminPanel({ state, myPlayerId }) {
         </button>
       )}
 
+      {/* Players who folded this hand — admin can undo */}
+      {isActive && foldedPlayers.length > 0 && (
+        <div className="eliminated-section">
+          <div className="eliminated-title">Hanno passato 🃏</div>
+          {foldedPlayers.map(p => (
+            <div key={p.playerId} className="player-row">
+              <span>{p.name}{p.disconnected ? ' ⚡' : ''} ({p.stack})</span>
+              <button className="btn-small btn-success" onClick={() =>
+                socket.emit('undo_fold', { roomId: state.roomId, playerId: p.playerId })
+              }>Annulla fold</button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Eliminated players */}
       {eliminatedPlayers.length > 0 && (
         <div className="eliminated-section">
@@ -542,20 +563,38 @@ function AdminPanel({ state, myPlayerId }) {
         </div>
       )}
 
-      {/* Rebuy */}
-      <button className="btn-secondary" onClick={() => setShowRebuy(!showRebuy)}>
-        Aggiungi fiches (rebuy)
+      {/* Chips management: add or set exact amount */}
+      <button className="btn-secondary" onClick={() => setShowChips(!showChips)}>
+        Gestisci fiches
       </button>
-      {showRebuy && (
+      {showChips && (
         <div className="rebuy-panel">
-          <select value={rebuyPlayerId} onChange={e => setRebuyPlayerId(e.target.value)}>
+          <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
+            <button
+              className={chipsMode === 'add' ? 'btn-primary' : 'btn-secondary'}
+              style={{ flex: 1, padding: '4px 0' }}
+              onClick={() => setChipsMode('add')}
+            >+ Aggiungi</button>
+            <button
+              className={chipsMode === 'set' ? 'btn-primary' : 'btn-secondary'}
+              style={{ flex: 1, padding: '4px 0' }}
+              onClick={() => setChipsMode('set')}
+            >= Imposta</button>
+          </div>
+          <select value={chipsPlayerId} onChange={e => setChipsPlayerId(e.target.value)}>
             <option value="">Seleziona giocatore</option>
             {state.players.filter(p => !p.eliminated).map(p => (
               <option key={p.playerId} value={p.playerId}>{p.name} ({p.stack})</option>
             ))}
           </select>
-          <input type="number" value={rebuyAmount} onChange={e => setRebuyAmount(e.target.value)} min="1" placeholder="Importo" />
-          <button className="btn-primary" onClick={doRebuy} disabled={!rebuyPlayerId}>Aggiungi</button>
+          <input
+            type="number" value={chipsAmount}
+            onChange={e => setChipsAmount(e.target.value)}
+            min="0" placeholder="Importo"
+          />
+          <button className="btn-primary" onClick={doChips} disabled={!chipsPlayerId}>
+            {chipsMode === 'add' ? 'Aggiungi' : 'Imposta'}
+          </button>
         </div>
       )}
 
