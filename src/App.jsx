@@ -558,6 +558,18 @@ function AdminPanel({ state, myPlayerId }) {
           <button className="btn-primary" onClick={doRebuy} disabled={!rebuyPlayerId}>Aggiungi</button>
         </div>
       )}
+
+      <div className="admin-divider" />
+      <button
+        className="btn-destroy"
+        onClick={() => {
+          if (window.confirm('Eliminare il tavolo? Tutti i giocatori verranno disconnessi.')) {
+            socket.emit('destroy_room', { roomId: state.roomId })
+          }
+        }}
+      >
+        Elimina tavolo
+      </button>
     </div>
   )
 }
@@ -621,6 +633,13 @@ export default function App() {
 
     socket.on('error_msg', showError)
 
+    socket.on('room_destroyed', () => {
+      clearSession()
+      setGameState(null)
+      setMyPlayerId('')
+      setScreen('home')
+    })
+
     return () => {
       socket.off('connect')
       socket.off('room_created')
@@ -629,6 +648,7 @@ export default function App() {
       socket.off('rejoin_failed')
       socket.off('game_state')
       socket.off('error_msg')
+      socket.off('room_destroyed')
     }
   }, [])
 
@@ -644,9 +664,9 @@ export default function App() {
     )
   }
 
-  // Check if current player is eliminated
+  // Check if current player is eliminated (admin is never shown the eliminated screen)
   const me = gameState.players.find(p => p.playerId === myPlayerId)
-  if (me?.eliminated && screen === 'game') {
+  if (me?.eliminated && !me?.isAdmin && screen === 'game') {
     return (
       <>
         {pendingPin && <PinModal pin={pendingPin.pin} roomId={pendingPin.roomId} onClose={() => setPendingPin(null)} />}
